@@ -407,11 +407,22 @@ function makeCanvas(w, h) {
   return c;
 }
 
-// Calidad gráfica. En móviles se empieza en "media" y, si el juego va lento,
-// baja sola (menos resolución y menos partículas) para que siempre vaya fluido.
-const QUALITY = [{ dpr: 2, particles: 2000 }, { dpr: 1.5, particles: 1200 }, { dpr: 1, particles: 700 }];
+// Calidad gráfica. En móviles se empieza con resolución alta (para que las
+// imágenes se vean nítidas) pero menos partículas; si el juego va lento, baja
+// sola (menos resolución y menos partículas) para que siempre vaya fluido.
+const QUALITY = [
+  { dpr: 2, particles: 2000 },
+  { dpr: 2, particles: 1100 },
+  { dpr: 1.5, particles: 900 },
+  { dpr: 1, particles: 600 },
+];
 let quality = IS_TOUCH ? 1 : 0;
 let maxParticles = QUALITY[quality].particles;
+
+// Aumento de las imágenes personalizadas según la pantalla: en pantallas
+// pequeñas (móviles) se dibujan más grandes para que se reconozcan. Solo cambia
+// el dibujo, no la zona de choque.
+let skinK = 1;
 
 function resize() {
   const cssW = window.innerWidth, cssH = window.innerHeight;
@@ -424,8 +435,11 @@ function resize() {
   // pantallas pequeñas (móviles) la cámara se acerca para que todo se vea grande.
   let scale = Math.sqrt((cssW * cssH) / (1280 * 720));
   const short = Math.min(cssW, cssH);
-  if (short < 640) scale = Math.max(scale, short / 540);
+  if (short < 640) scale = Math.max(scale, short / 500);
   VIEW = scale * DPR;
+  // Que un enemigo normal con imagen mida al menos unos 87 píxeles en pantalla
+  const k = Math.round(clamp(1.25 / scale, 1, 1.8) * 20) / 20;
+  if (k !== skinK) { skinK = k; refreshSkinSprites(); }
   buildVignettes();
 }
 
@@ -564,8 +578,10 @@ function skinSprite(name, color, r, flash, elite) {
   // Tamaño visible (diámetro / lado). Solo cambia el dibujo: la zona de choque
   // sigue siendo "r", así que la dificultad no varía. El sumando fijo hace que
   // los enemigos pequeños crezcan más y todas las imágenes se reconozcan bien.
-  const size = (circle ? r * 2.4 + 24 : r * 2.8 + 36) * (cfg.tam || 1);
-  return sprite(`skin-${name}-${r}-${flash ? 1 : 0}-${elite ? 1 : 0}-${color}`, size / 2 + 16, g => {
+  // En pantallas pequeñas se aumenta (skinK); jefes y jugador algo menos para no tapar media pantalla
+  const k = /^(jefe|jugador)/.test(name) ? Math.sqrt(skinK) : skinK;
+  const size = (circle ? r * 2.4 + 24 : r * 2.8 + 36) * (cfg.tam || 1) * k;
+  return sprite(`skin-${name}-${r}-${flash ? 1 : 0}-${elite ? 1 : 0}-${color}-${k}`, size / 2 + 16, g => {
     g.imageSmoothingQuality = 'high';
     if (circle) {
       const R = size / 2;
@@ -862,15 +878,23 @@ function loadSkins() {
     const img = new Image();
     img.onload = () => {
       skinImg[name] = img;
-      // Los enemigos que ya existían pasan a usar la imagen
-      for (const e of enemies) {
-        if (e.type === name) { e.spr = enemySprite(name, false, e.elite); e.sprF = enemySprite(name, true, e.elite); e.sep = 1.3; }
-      }
-      if (state === 'menu') initMenuScene();
+      refreshSkinSprites(); // los enemigos que ya existían pasan a usar la imagen
     };
     img.onerror = () => { if (++i < exts.length) img.src = `imagenes/${name}.${exts[i]}`; };
     img.src = `imagenes/${name}.${exts[0]}`;
   }
+}
+
+// Vuelve a preparar los dibujos de los enemigos (al cargar una imagen o al
+// cambiar el tamaño de la pantalla)
+function refreshSkinSprites() {
+  for (const e of enemies) {
+    if (e.boss || !skinImg[e.type]) continue;
+    e.spr = enemySprite(e.type, false, e.elite);
+    e.sprF = enemySprite(e.type, true, e.elite);
+    e.sep = 1.3;
+  }
+  if (state === 'menu') initMenuScene();
 }
 
 // Iconos SVG (24x24) para la interfaz
@@ -2322,7 +2346,7 @@ function drawPickups() {
 
 function drawEnemies() {
   for (const e of enemies) {
-    if (e.dead || !inView(e.x, e.y, e.r + 70)) continue;
+    if (e.dead || !inView(e.x, e.y, e.r + 120)) continue;
     if (e.boss) { drawBoss(e); continue; }
     const s = e.flash > 0 ? e.sprF : e.spr;
     if (skinImg[e.type]) { // con imagen: derecho, con un balanceo como si caminara
