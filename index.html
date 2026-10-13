@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Horda Neón</title>
+
+  <!-- Para móviles: color de la barra del navegador y modo "app" al añadirlo a la pantalla de inicio -->
+  <meta name="theme-color" content="#05030d">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Horda Neón">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icono.svg" type="image/svg+xml">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+  <!-- Aquí se dibuja todo el juego -->
+  <canvas id="game"></canvas>
+
+  <!-- ===================== HUD (durante la partida) ===================== -->
+  <div id="hud" class="hidden">
+    <div id="xpbar"><div id="xpfill"></div></div>
+    <div id="lvl">NV 1</div>
+    <div id="hud-left">
+      <div id="wslots" class="slotrow"></div>
+      <div id="pslots" class="slotrow"></div>
+    </div>
+    <div id="timer">00:00</div>
+    <div id="hud-right">
+      <div id="kills">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C7 2 4 5.5 4 10c0 2.6 1.2 4.4 3 5.5V19a1 1 0 0 0 1 1h1.5v-2h1.5v2h2v-2h1.5v2H16a1 1 0 0 0 1-1v-3.5c1.8-1.1 3-2.9 3-5.5 0-4.5-3-8-8-8zm-3.5 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm7 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+        <span id="killcount">0</span>
+      </div>
+      <button id="btn-pause" title="Pausa (P)" aria-label="Pausa">❚❚</button>
+    </div>
+    <div id="bossbar" class="hidden">
+      <div id="bossname"></div>
+      <div class="btrack"><div id="bossfill"></div></div>
+    </div>
+    <div id="hpwrap"><div id="hpfill"></div><span id="hptext"></span></div>
+
+    <!-- Pista para móvil: cómo usar el joystick -->
+    <div id="touch-hint" class="hidden">
+      <div class="th-ring"><div class="th-knob"></div></div>
+      <span>Arrastra el dedo para moverte</span>
+    </div>
+  </div>
+
+  <!-- Carteles grandes ("¡ESTAMPIDA!", "JEFE"...) -->
+  <div id="banner"><div id="banner-title"></div><div id="banner-sub"></div></div>
+
+  <!-- ===================== MENÚ PRINCIPAL ===================== -->
+  <div id="menu" class="screen">
+    <div class="menu-inner">
+      <div class="logo"><span class="l1">HORDA</span><span class="l2">NEÓN</span></div>
+      <p class="tagline">Sobrevive 10 minutos · Derrota al Núcleo del Vacío</p>
+      <button id="btn-play" class="btn big">JUGAR</button>
+      <div class="controls">
+        <div class="desk-only"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> o flechas para moverte</div>
+        <div class="touch-only">Arrastra el dedo por la pantalla para moverte</div>
+        <div>Tus armas disparan <b>solas</b>. Recoge cristales para subir de nivel.</div>
+        <div class="desk-only"><kbd>P</kbd> pausa · <kbd>M</kbd> música</div>
+      </div>
+      <button id="btn-fs-menu" class="btn ghost small hidden">PANTALLA COMPLETA</button>
+      <div id="best" class="best"></div>
+    </div>
+  </div>
+
+  <!-- ===================== SUBIDA DE NIVEL ===================== -->
+  <div id="levelup" class="screen overlay hidden">
+    <div class="lu-wrap">
+      <div id="lu-sub" class="lu-sub">NIVEL 2</div>
+      <h1 class="lu-title">¡SUBES DE NIVEL!</h1>
+      <div id="cards"></div>
+      <div class="lu-hint desk-only">Elige una mejora · teclas <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></div>
+      <div class="lu-hint touch-only">Toca una mejora para elegirla</div>
+    </div>
+  </div>
+
+  <!-- ===================== COFRE ===================== -->
+  <div id="chest" class="screen overlay hidden">
+    <div class="chest-wrap">
+      <h1 id="chest-title" class="lu-title gold">¡COFRE!</h1>
+      <div id="chest-content"></div>
+      <button id="btn-chest" class="btn gold">¡GENIAL!</button>
+    </div>
+  </div>
+
+  <!-- ===================== PAUSA ===================== -->
+  <div id="pause" class="screen overlay hidden">
+    <div class="panel pause-panel">
+      <h1 class="panel-title">PAUSA</h1>
+      <div id="pause-build"></div>
+      <div class="btn-col">
+        <button id="btn-resume" class="btn">CONTINUAR</button>
+        <button id="btn-music" class="btn ghost">MÚSICA: SÍ</button>
+        <button id="btn-vibrate" class="btn ghost touch-only">VIBRACIÓN: SÍ</button>
+        <button id="btn-fs" class="btn ghost hidden">PANTALLA COMPLETA</button>
+        <button id="btn-restart" class="btn ghost">REINICIAR</button>
+        <button id="btn-quit" class="btn ghost">SALIR AL MENÚ</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== FIN DE PARTIDA ===================== -->
+  <div id="gameover" class="screen overlay hidden">
+    <div class="panel wide go-panel">
+      <h1 id="go-title" class="panel-title">HAS CAÍDO</h1>
+      <p id="go-sub" class="go-sub"></p>
+      <div id="go-record" class="go-record hidden">★ ¡NUEVO RÉCORD! ★</div>
+      <div class="go-stats">
+        <div class="stat"><span class="v" id="go-time">00:00</span><span class="k">Tiempo</span></div>
+        <div class="stat"><span class="v" id="go-level">1</span><span class="k">Nivel</span></div>
+        <div class="stat"><span class="v" id="go-kills">0</span><span class="k">Enemigos</span></div>
+      </div>
+      <div class="go-side">
+        <h3 class="go-h3">DAÑO POR ARMA</h3>
+        <div id="go-dmg"></div>
+      </div>
+      <div class="btn-row">
+        <button id="btn-retry" class="btn">REINTENTAR</button>
+        <button id="btn-menu" class="btn ghost">MENÚ</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="juego.js"></script>
+</body>
+</html>

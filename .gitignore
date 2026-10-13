@@ -1,0 +1,8 @@
+# Archivos del sistema
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Dependencias y registros (por si algún día se usan)
+node_modules/
+*.log
