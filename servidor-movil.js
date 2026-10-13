@@ -1,5 +1,5 @@
 // =============================================================================
-// Servidor para jugar a HORDA NEÓN desde el móvil.
+// Servidor para jugar a PSOE STRIKES BACK desde el móvil.
 // Sirve los archivos de esta carpeta en tu red Wi-Fi. Ábrelo con el archivo
 // "JUGAR-EN-MOVIL.bat" y escribe en el navegador del móvil la dirección que
 // aparece (el móvil tiene que estar conectado al mismo Wi-Fi que el ordenador).
@@ -80,7 +80,7 @@ function start(port) {
     const ips = localAddresses();
     const line = '='.repeat(60);
     console.log('\n' + line);
-    console.log('   HORDA NEÓN · servidor para jugar desde el móvil');
+    console.log('   PSOE STRIKES BACK · servidor para jugar desde el móvil');
     console.log(line + '\n');
     if (ips.length) {
       console.log('   1. Conecta el móvil al MISMO Wi-Fi que este ordenador.');

@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Horda Neon - servidor para el movil
+title PSOE Strikes Back - servidor para el movil
 cd /d "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (

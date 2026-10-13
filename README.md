@@ -1,4 +1,4 @@
-# Horda Neón
+# PSOE Strikes Back
 
 Juego de supervivencia contra hordas (estilo *Vampire Survivors*) con estética de neón, hecho solo con HTML, CSS y JavaScript, sin librerías ni instalación. Todo se dibuja con Canvas 2D, y la música y los sonidos se generan en tiempo real con Web Audio.
 

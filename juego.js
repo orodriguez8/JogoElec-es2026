@@ -1,6 +1,6 @@
 'use strict';
 /* =============================================================================
-   HORDA NEÓN
+   PSOE STRIKES BACK
    -----------------------------------------------------------------------------
    Un juego de supervivencia contra hordas (estilo "Vampire Survivors") hecho
    solo con HTML, CSS y JavaScript, sin librerías. Todo se dibuja con Canvas 2D
@@ -561,7 +561,10 @@ function shapePath(g, shape, r) {
 function skinSprite(name, color, r, flash, elite) {
   const img = skinImg[name], cfg = SKINS[name];
   const circle = cfg.modo === 'circulo';
-  const size = r * (circle ? 2.3 : 3.6) * (cfg.tam || 1); // diámetro / lado visible
+  // Tamaño visible (diámetro / lado). Solo cambia el dibujo: la zona de choque
+  // sigue siendo "r", así que la dificultad no varía. El sumando fijo hace que
+  // los enemigos pequeños crezcan más y todas las imágenes se reconozcan bien.
+  const size = (circle ? r * 2.4 + 24 : r * 2.8 + 36) * (cfg.tam || 1);
   return sprite(`skin-${name}-${r}-${flash ? 1 : 0}-${elite ? 1 : 0}-${color}`, size / 2 + 16, g => {
     g.imageSmoothingQuality = 'high';
     if (circle) {
@@ -861,7 +864,7 @@ function loadSkins() {
       skinImg[name] = img;
       // Los enemigos que ya existían pasan a usar la imagen
       for (const e of enemies) {
-        if (e.type === name) { e.spr = enemySprite(name, false, e.elite); e.sprF = enemySprite(name, true, e.elite); }
+        if (e.type === name) { e.spr = enemySprite(name, false, e.elite); e.sprF = enemySprite(name, true, e.elite); e.sep = 1.3; }
       }
       if (state === 'menu') initMenuScene();
     };
@@ -1735,6 +1738,7 @@ function spawnEnemy(type, x, y, opt = {}) {
     face: !!T.face, ranged: !!T.ranged, heavy: !!T.heavy, split: T.split || 0,
     elite, boss: false, flash: 0, dead: false, orbT: 0,
     shootT: rand(1, 2.5), strafe: Math.random() < 0.5 ? -1 : 1, phase: rand(TAU),
+    sep: skinImg[type] ? 1.3 : 1, // con imagen grande se separan un poco más para no amontonarse
     dir: opt.dir || null, life: opt.life || 0,
   };
   e.maxHp = e.hp;
@@ -1852,9 +1856,9 @@ function updateEnemies(dt) {
     }
     // Separación: los enemigos se empujan entre sí para no amontonarse
     let sx = 0, sy = 0;
-    forEachNear(e.x, e.y, e.r + 36, o => {
+    forEachNear(e.x, e.y, e.r * e.sep + 46, o => {
       if (o === e) return;
-      const ox = e.x - o.x, oy = e.y - o.y, rr = e.r + o.r;
+      const ox = e.x - o.x, oy = e.y - o.y, rr = (e.r + o.r) * (o.boss ? 1 : e.sep);
       const dd = ox * ox + oy * oy;
       if (dd >= rr * rr) return;
       if (dd < 0.01) { sx += rand(-1, 1); sy += rand(-1, 1); return; }
@@ -2318,7 +2322,7 @@ function drawPickups() {
 
 function drawEnemies() {
   for (const e of enemies) {
-    if (e.dead || !inView(e.x, e.y, e.r + 30)) continue;
+    if (e.dead || !inView(e.x, e.y, e.r + 70)) continue;
     if (e.boss) { drawBoss(e); continue; }
     const s = e.flash > 0 ? e.sprF : e.spr;
     if (skinImg[e.type]) { // con imagen: derecho, con un balanceo como si caminara
