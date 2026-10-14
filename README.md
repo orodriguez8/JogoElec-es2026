@@ -1,6 +1,6 @@
 # PSOE Strikes Back
 
-Juego de supervivencia contra hordas (estilo *Vampire Survivors*) con estética de neón, hecho solo con HTML, CSS y JavaScript, sin librerías ni instalación. Todo se dibuja con Canvas 2D, y la música y los sonidos se generan en tiempo real con Web Audio.
+Juego de supervivencia contra hordas (estilo *Vampire Survivors*) con estética de neón, hecho solo con HTML, CSS y JavaScript, sin librerías ni instalación. Todo se dibuja con Canvas 2D, y la música (power metal épico compuesto para el juego) y los sonidos se generan en tiempo real con Web Audio.
 
 Sobrevive 10 minutos, sube de nivel, combina armas y mejoras, haz evolucionar tus armas y derrota al **Núcleo del Vacío**.
 
@@ -24,7 +24,7 @@ En el móvil te mueves arrastrando el dedo por la pantalla (joystick flotante). 
 
 - **7 armas** con evolución: Pulso Neón, Orbes Gemelos, Arco Voltaico, Onda Nova, Disco Cuántico, Lluvia Estelar y Drones Escolta.
 - **9 mejoras pasivas.**
-- **4 jefes** con patrones de ataque distintos, más hordas que te rodean y estampidas.
+- **4 jefes** con patrones de ataque distintos (pisotones, saltos, tormentas de rayos y balas: sal de los círculos con ⚠), más hordas que te rodean y estampidas.
 - **Récord** guardado en el navegador.
 
 ## Imágenes personalizadas
@@ -37,7 +37,7 @@ Pon imágenes en la carpeta `imagenes/` con estos nombres y se usarán en lugar 
 | `veloz.png` | Enemigo rápido |
 | `divisor.png` | Se divide en tres al morir |
 | `mini.png` | Los trozos del divisor |
-| `centinela.png` | Enemigo que dispara |
+| `centinela.png` | Enemigo que dispara y embiste |
 | `tanque.png` | Enemigo grande y resistente |
 | `jefe1.png` … `jefe4.png` | Los 4 jefes (el 4 es el jefe final) |
 | `jugador.png` | Tu personaje |

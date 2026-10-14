@@ -85,10 +85,14 @@ function buzz(pattern) {
 // 2. SONIDO Y MÚSICA (todo sintetizado, no hay archivos de audio)
 // =============================================================================
 const Sound = (() => {
-  let ac = null, master, sfxBus, musicBus, musicFilter, arpIn, noiseBuf;
+  let ac = null, master, sfxBus, musicBus, musicFilter, noiseBuf;
+  let guitar, leadA, leadB, echoIn, verbIn, choirIn; // instrumentos de la música
   let musicOn = store.get('music', true);
   let beatCb = null, fadeTimer = 0;
-  const MUSIC_VOL = 0.32;
+  const MUSIC_VOL = 0.22;
+  // En móviles la banda usa una versión más ligera (eco simple en vez de reverberación
+  // y menos voces en cuerdas y coro) para que no dé tirones
+  const LITE = IS_TOUCH;
   const last = {};
 
   function init() {
@@ -114,18 +118,88 @@ const Sound = (() => {
     musicBus = ac.createGain(); musicBus.gain.value = musicOn ? MUSIC_VOL : 0;
     musicBus.connect(musicFilter);
 
-    // Eco para el arpegio
-    arpIn = ac.createGain(); arpIn.connect(musicBus);
-    const delay = ac.createDelay(1); delay.delayTime.value = 0.375;
-    const feedback = ac.createGain(); feedback.gain.value = 0.38;
-    const wet = ac.createGain(); wet.gain.value = 0.45;
-    arpIn.connect(delay); delay.connect(feedback); feedback.connect(delay);
-    delay.connect(wet); wet.connect(musicBus);
-
     // Ruido blanco reutilizable (explosiones, platillos...)
     noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+
+    buildBand();
+  }
+
+  // Panorámica izquierda/derecha (si el navegador no la tiene, suena en el centro)
+  function pan(v) {
+    if (!ac.createStereoPanner) return ac.createGain();
+    const p = ac.createStereoPanner();
+    p.pan.value = v;
+    return p;
+  }
+
+  // Amplificador de guitarra simulado: saturación + filtros de "altavoz"
+  function amp(drive, cut, vol) {
+    const pre = ac.createGain(); pre.gain.value = drive;
+    const sh = ac.createWaveShaper(), n = 2048, curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = (i / (n - 1)) * 2 - 1; curve[i] = Math.tanh(x * 4) / Math.tanh(4); }
+    sh.curve = curve; sh.oversample = LITE ? 'none' : '2x';
+    const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 90;
+    const scoop = ac.createBiquadFilter(); scoop.type = 'peaking'; scoop.frequency.value = 500; scoop.Q.value = 0.8; scoop.gain.value = -4;
+    const bite = ac.createBiquadFilter(); bite.type = 'peaking'; bite.frequency.value = 1800; bite.Q.value = 1; bite.gain.value = 4;
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = cut;
+    const out = ac.createGain(); out.gain.value = vol;
+    pre.connect(sh); sh.connect(hp); hp.connect(scoop); scoop.connect(bite); bite.connect(lp); lp.connect(out);
+    return { input: pre, out };
+  }
+
+  function buildBand() {
+    // Reverberación (sala grande) para batería, cuerdas, coro y solos
+    verbIn = ac.createGain();
+    const verbOut = ac.createGain();
+    if (LITE) { // eco corto: suena a sala y apenas gasta
+      const d = ac.createDelay(0.2); d.delayTime.value = 0.09;
+      verbOut.gain.value = 0.22;
+      verbIn.connect(d); d.connect(verbOut);
+    } else {
+      const conv = ac.createConvolver(), len = Math.floor(ac.sampleRate * 1.3);
+      const ir = ac.createBuffer(2, len, ac.sampleRate);
+      for (let c = 0; c < 2; c++) {
+        const ch = ir.getChannelData(c);
+        for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+      }
+      conv.buffer = ir;
+      verbOut.gain.value = 0.3;
+      verbIn.connect(conv); conv.connect(verbOut);
+    }
+    verbOut.connect(musicBus);
+
+    // Guitarra rítmica "doblada": una a la izquierda y la otra, un pelín retrasada, a la derecha
+    guitar = amp(5, 4200, 0.19);
+    const gl = pan(-0.75), gr = pan(0.75), dl = ac.createDelay(0.05);
+    dl.delayTime.value = 0.017;
+    guitar.out.connect(gl); gl.connect(musicBus);
+    guitar.out.connect(dl); dl.connect(gr); gr.connect(musicBus);
+
+    // Dos guitarras solistas (melodía y armonía) con eco
+    echoIn = ac.createGain();
+    const delay = ac.createDelay(1); delay.delayTime.value = STEP * 3;
+    const feedback = ac.createGain(); feedback.gain.value = 0.3;
+    const wet = ac.createGain(); wet.gain.value = 0.22;
+    echoIn.connect(delay); delay.connect(feedback); feedback.connect(delay);
+    delay.connect(wet); wet.connect(musicBus);
+    leadA = amp(4, 5000, 0.13);
+    leadB = amp(4, 5000, 0.075);
+    const la = pan(-0.2), lb = pan(0.4);
+    leadA.out.connect(la); la.connect(musicBus);
+    leadB.out.connect(lb); lb.connect(musicBus);
+    for (const l of [leadA, leadB]) { l.out.connect(echoIn); l.out.connect(verbIn); }
+
+    // Coro "Aaah": ondas filtradas por las resonancias de la voz humana
+    choirIn = ac.createGain();
+    const choirOut = ac.createGain(); choirOut.gain.value = 1;
+    for (const [f, q, v] of [[700, 6, 1], [1150, 8, 0.55], [2600, 10, 0.25]]) {
+      const bp = ac.createBiquadFilter(), g = ac.createGain();
+      bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q; g.gain.value = v;
+      choirIn.connect(bp); bp.connect(g); g.connect(choirOut);
+    }
+    choirOut.connect(musicBus); choirOut.connect(verbIn);
   }
 
   const ready = () => ac && ac.state === 'running';
@@ -249,102 +323,351 @@ const Sound = (() => {
   };
 
   // ---------------------------------------------------------------- Música
-  // Secuenciador sencillo: 120 BPM, progresión La menor - Fa - Do - Sol.
-  // La "intensidad" añade capas: 0 = bajo + bombo, 1 = +arpegio y charles,
-  // 2 = +caja, 3 = jefe (todo más brillante).
-  const BPM = 120, STEP = 60 / BPM / 4;
-  const PROG = [{ root: 110.0, third: 3 }, { root: 87.31, third: 4 }, { root: 130.81, third: 4 }, { root: 98.0, third: 4 }];
-  const music = { on: false, step: 0, next: 0, timer: 0, intensity: 0 };
+  // Canción de power metal épico (estilo Angra / Helloween) compuesta para el
+  // juego y tocada por una "banda" de sintetizadores: dos guitarras rítmicas
+  // distorsionadas, bajo, batería con doble bombo, dos guitarras solistas
+  // armonizadas, cuerdas y coro.
+  // Partes: intro sinfónica (solo al empezar) → estrofa ↔ estribillo. Si hay un
+  // jefe, al acabar el compás salta a la parte del jefe (solo neoclásico).
+  // La "intensidad" añade capas: 0 = riff + batería sencilla, 1 = + melodía,
+  // 2 = + doble bombo, segunda guitarra y coro, 3 = jefe.
+  const BPM = 160, STEP = 60 / BPM / 4; // STEP = una semicorchea
+  const E2 = 82.41, E4 = 329.63;
 
-  function kick(t) {
+  // Acordes: r = semitonos desde Mi, t = notas del acorde. hm = usa la escala
+  // menor armónica (el Si mayor con Re# que da ese sabor "clásico")
+  const CH = {
+    Em: { r: 0, t: [0, 3, 7] },
+    F:  { r: 1, t: [0, 4, 7] },
+    G:  { r: 3, t: [0, 4, 7] },
+    Am: { r: 5, t: [0, 3, 7] },
+    B:  { r: 7, t: [0, 4, 7], hm: true },
+    C:  { r: 8, t: [0, 4, 7] },
+    D:  { r: 10, t: [0, 4, 7] },
+  };
+
+  // Partitura. riff: 16 semicorcheas por compás → O = acorde abierto,
+  // M = acorde apagado fuerte, m = apagado suave, . = deja sonar / silencio.
+  // mel: un compás por fila, [nota, duración en semicorcheas]; la nota son
+  // semitonos desde Mi4 (12 = Mi5) y null es silencio. 'arp' = arpegio rápido.
+  const SONG = {
+    intro: {
+      next: 'verse', riff: null,
+      chords: ['Em', 'C', 'Am', 'B'],
+      mel: [
+        [[7, 8], [12, 8]],
+        [[15, 12], [12, 4]],
+        [[17, 8], [15, 4], [12, 4]],
+        [[11, 12], [null, 4]],
+      ],
+    },
+    verse: {
+      next: 'chorus', riff: 'O.mmM.mmM.mmM.mm',
+      chords: ['Em', 'Em', 'C', 'D', 'Em', 'Em', 'Am', 'B'],
+      mel: [
+        [[12, 4], [7, 2], [12, 2], [14, 4], [15, 4]],
+        [[14, 4], [12, 4], [10, 4], [7, 4]],
+        [[8, 6], [12, 2], [15, 4], [12, 4]],
+        [[14, 8], [12, 4], [10, 4]],
+        [[12, 4], [7, 2], [12, 2], [14, 4], [15, 4]],
+        [[17, 4], [15, 4], [14, 4], [15, 4]],
+        [[17, 6], [15, 2], [12, 4], [8, 4]],
+        [[11, 6], [12, 2], [14, 4], [11, 4]],
+      ],
+    },
+    chorus: {
+      next: 'verse', riff: 'O.m.m.m.O.m.m.mm',
+      chords: ['C', 'D', 'G', 'Em', 'C', 'D', 'B', 'B'],
+      mel: [
+        [[15, 8], [12, 4], [15, 4]],
+        [[17, 8], [14, 4], [17, 4]],
+        [[19, 12], [17, 2], [15, 2]],
+        [[15, 8], [14, 4], [12, 4]],
+        [[12, 4], [15, 4], [20, 8]],
+        [[19, 4], [17, 4], [14, 4], [10, 4]],
+        [[11, 8], [14, 8]],
+        [[19, 12], [null, 4]],
+      ],
+    },
+    boss: {
+      next: 'boss', riff: 'MmmmMmmmMmmmMmMm',
+      chords: ['Em', 'F', 'Em', 'B', 'Am', 'F', 'B', 'B'],
+      mel: [
+        'arp', 'arp', 'arp',
+        [[19, 6], [17, 2], [15, 4], [14, 4]],
+        'arp', 'arp', 'arp',
+        [[7, 1], [8, 1], [11, 1], [12, 1], [14, 1], [15, 1], [17, 1], [19, 9]],
+      ],
+    },
+  };
+  // Convierte la melodía de cada parte en una lista de notas por semicorchea
+  const ARP = [0, 1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5];
+  for (const k in SONG) {
+    const sec = SONG[k];
+    sec.notes = [];
+    sec.mel.forEach((bar, b) => {
+      let s = b * 16;
+      if (bar === 'arp') {
+        const ch = CH[sec.chords[b]], r = ch.r <= 1 ? ch.r : ch.r - 12, tones = [];
+        for (let o = 0; o < 3; o++) for (const x of ch.t) tones.push(r + x + o * 12);
+        ARP.forEach((i, j) => { sec.notes[s + j] = { n: tones[i], d: 1, arp: true }; });
+        return;
+      }
+      for (const [n, d] of bar) {
+        if (n !== null) sec.notes[s] = { n, d };
+        s += d;
+      }
+    });
+  }
+
+  // Nota una tercera por encima dentro de la escala (para la segunda guitarra)
+  const NAT = [0, 2, 3, 5, 7, 8, 10], HARM = [0, 2, 3, 5, 7, 8, 11];
+  function third(n, hm) {
+    const sc = hm ? HARM : NAT, pc = ((n % 12) + 12) % 12, i = sc.indexOf(pc);
+    if (i < 0) return n + 3;
+    return n + ((sc[(i + 2) % 7] - pc + 12) % 12);
+  }
+
+  const music = { on: false, s: 0, next: 0, timer: 0, intensity: 0, sec: null, bar: 0 };
+
+  // --- Batería
+  function hit(t, v, type, f, dur, q = 0.7, verb = 0) {
+    const src = ac.createBufferSource(), fl = ac.createBiquadFilter(), g = ac.createGain();
+    src.buffer = noiseBuf;
+    fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+    g.gain.setValueAtTime(v, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(fl); fl.connect(g); g.connect(musicBus);
+    if (verb) { const s = ac.createGain(); s.gain.value = verb; g.connect(s); s.connect(verbIn); }
+    src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.02);
+  }
+  function drum(t, f1, f2, v, dur, verb = 0) {
     const o = ac.createOscillator(), g = ac.createGain();
     o.type = 'sine';
-    o.frequency.setValueAtTime(150, t);
-    o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
-    env(g, t, 0.85, 0.004, 0.32);
+    o.frequency.setValueAtTime(f1, t);
+    o.frequency.exponentialRampToValueAtTime(f2, t + dur * 0.5);
+    env(g, t, v, 0.002, dur);
     o.connect(g); g.connect(musicBus);
-    o.start(t); o.stop(t + 0.35);
+    if (verb) g.connect(verbIn);
+    o.start(t); o.stop(t + dur + 0.02);
   }
-  function bass(f, t) {
-    const o = ac.createOscillator(), fl = ac.createBiquadFilter(), g = ac.createGain();
-    o.type = 'sawtooth'; o.frequency.value = f;
-    fl.type = 'lowpass'; fl.Q.value = 6;
-    fl.frequency.setValueAtTime(music.intensity >= 3 ? 1400 : 900, t);
-    fl.frequency.exponentialRampToValueAtTime(180, t + 0.22);
-    env(g, t, 0.3, 0.01, 0.24);
-    o.connect(fl); fl.connect(g); g.connect(musicBus);
-    o.start(t); o.stop(t + 0.27);
+  function kick(t, v) {
+    drum(t, 170, 46, v, v < 0.6 ? 0.1 : 0.15); // los golpes rápidos del doble bombo, más secos
+    if (v >= 0.6) hit(t, v * 0.22, 'highpass', 3000, 0.012); // "clic" del pedal en los golpes fuertes
   }
-  function hat(t, v) {
-    const src = ac.createBufferSource(), fl = ac.createBiquadFilter(), g = ac.createGain();
-    src.buffer = noiseBuf;
-    fl.type = 'highpass'; fl.frequency.value = 7500;
-    g.gain.setValueAtTime(v, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
-    src.connect(fl); fl.connect(g); g.connect(musicBus);
-    src.start(t, Math.random() * 0.5); src.stop(t + 0.06);
+  function snare(t, v = 1) {
+    hit(t, 0.7 * v, 'bandpass', 2200, 0.17, 0.6, 0.7);
+    drum(t, 240, 170, 0.45 * v, 0.09);
   }
-  function snare(t) {
-    const src = ac.createBufferSource(), fl = ac.createBiquadFilter(), g = ac.createGain();
-    src.buffer = noiseBuf;
-    fl.type = 'bandpass'; fl.frequency.value = 1800; fl.Q.value = 0.7;
-    env(g, t, 0.22, 0.002, 0.18);
-    src.connect(fl); fl.connect(g); g.connect(musicBus);
-    src.start(t, Math.random() * 0.5); src.stop(t + 0.2);
+  const hat = (t, v) => hit(t, v, 'highpass', 8000, 0.04);
+  const ride = t => hit(t, 0.07, 'bandpass', 6000, 0.3, 1.5);
+  const crash = t => hit(t, 0.17, 'highpass', 4500, 1.5, 0.7, 0.8);
+  const tom = (t, f) => drum(t, f, f * 0.6, 0.45, 0.28, true);
+  function timpani(t, root, v) {
+    drum(t, E2 * semi(root) * 1.04, E2 * semi(root), v, 1.3, true);
+    hit(t, v * 0.25, 'lowpass', 500, 0.15);
   }
-  function pluck(f, t, cut) {
-    const o = ac.createOscillator(), fl = ac.createBiquadFilter(), g = ac.createGain();
-    o.type = 'square'; o.frequency.value = f;
+
+  // --- Guitarra rítmica y bajo (acordes de quinta, como en el metal)
+  function riff(root, t, dur, open, accent) {
+    const f = E2 * semi(root), fl = ac.createBiquadFilter(), g = ac.createGain();
     fl.type = 'lowpass';
-    fl.frequency.setValueAtTime(cut, t);
-    fl.frequency.exponentialRampToValueAtTime(300, t + 0.16);
-    env(g, t, 0.06, 0.003, 0.18);
-    o.connect(fl); fl.connect(g); g.connect(arpIn);
-    o.start(t); o.stop(t + 0.2);
+    const v = open ? 0.6 : accent ? 0.7 : 0.5;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.004);
+    if (open) {
+      fl.frequency.value = 3200;
+      g.gain.exponentialRampToValueAtTime(v * 0.5, t + dur - 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.02);
+    } else { // apagado con la palma: corto y oscuro, el "chug" del metal
+      fl.frequency.setValueAtTime(accent ? 1300 : 900, t);
+      fl.frequency.exponentialRampToValueAtTime(240, t + 0.09);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + Math.min(dur, 0.12));
+    }
+    fl.connect(g); g.connect(guitar.input);
+    for (const [m, det] of open && !LITE ? [[1, -6], [1.5, 5], [2, 3]] : [[1, -4], [1.5, 4]]) {
+      const o = ac.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f * m; o.detune.value = det;
+      o.connect(fl); o.start(t); o.stop(t + dur + 0.04);
+    }
   }
-  function pad(f, third, t, dur) {
-    for (const n of [0, third, 7]) {
-      for (const det of [-7, 7]) {
-        const o = ac.createOscillator(), fl = ac.createBiquadFilter(), g = ac.createGain();
-        o.type = 'sawtooth'; o.frequency.value = f * semi(n); o.detune.value = det;
-        fl.type = 'lowpass'; fl.frequency.value = 700;
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(0.03, t + 0.5);
-        g.gain.setValueAtTime(0.03, t + dur - 0.2);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.3);
-        o.connect(fl); fl.connect(g); g.connect(musicBus);
-        o.start(t); o.stop(t + dur + 0.35);
+  function bass(root, t, dur) {
+    const o = ac.createOscillator(), fl = ac.createBiquadFilter(), g = ac.createGain();
+    o.type = 'sawtooth'; o.frequency.value = (E2 / 2) * semi(root);
+    fl.type = 'lowpass'; fl.Q.value = 2;
+    fl.frequency.setValueAtTime(900, t);
+    fl.frequency.exponentialRampToValueAtTime(250, t + 0.12);
+    env(g, t, 0.5, 0.004, Math.max(0.1, dur));
+    o.connect(fl); fl.connect(g); g.connect(musicBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  // --- Guitarra solista: sube un pelín de tono al atacar y hace vibrato en las notas largas
+  function lead(n, t, dur, gtr, v) {
+    const f = E4 * semi(n), g = ac.createGain();
+    const oscs = [];
+    for (const type of LITE ? ['sawtooth'] : ['sawtooth', 'square']) {
+      const o = ac.createOscillator();
+      o.type = type; o.detune.value = oscs.length * 6;
+      oscs.push(o);
+    }
+    for (const o of oscs) {
+      if (dur > 0.3) {
+        o.frequency.setValueAtTime(f * semi(-1), t);
+        o.frequency.exponentialRampToValueAtTime(f, t + 0.06);
+      } else o.frequency.value = f;
+    }
+    if (dur > 0.3) {
+      const lfo = ac.createOscillator(), lg = ac.createGain();
+      lfo.frequency.value = 5.8;
+      lg.gain.setValueAtTime(0, t);
+      lg.gain.linearRampToValueAtTime(f * 0.02, t + 0.35);
+      lfo.connect(lg);
+      for (const o of oscs) lg.connect(o.frequency);
+      lfo.start(t); lfo.stop(t + dur + 0.1);
+    }
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.006);
+    g.gain.setValueAtTime(v, t + Math.max(0.01, dur - 0.03));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.04);
+    g.connect(gtr.input);
+    for (const o of oscs) { o.connect(g); o.start(t); o.stop(t + dur + 0.08); }
+  }
+  // Violines de la intro (sin distorsión, entrada suave)
+  function violin(n, t, dur) {
+    const f = E4 * semi(n), fl = ac.createBiquadFilter(), g = ac.createGain();
+    fl.type = 'lowpass'; fl.frequency.value = 2600;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.13, t + 0.18);
+    g.gain.setValueAtTime(0.13, t + dur - 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.2);
+    fl.connect(g); g.connect(musicBus); g.connect(verbIn);
+    const lfo = ac.createOscillator(), lg = ac.createGain();
+    lfo.frequency.value = 5.5; lg.gain.value = f * 0.012;
+    lfo.connect(lg);
+    for (const det of [-8, 8]) {
+      const o = ac.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+      lg.connect(o.frequency);
+      o.connect(fl); o.start(t); o.stop(t + dur + 0.25);
+    }
+    lfo.start(t); lfo.stop(t + dur + 0.25);
+  }
+
+  // --- Cuerdas y coro (acordes largos de fondo)
+  function swell(g, t, dur, v, atk) {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + atk);
+    g.gain.setValueAtTime(v, t + dur - 0.15);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.3);
+  }
+  const low = ch => (ch.r > 4 ? ch.r - 12 : ch.r); // acorde cerca de Mi3
+  function strings(ch, t, dur, v) {
+    const fl = ac.createBiquadFilter(), g = ac.createGain();
+    fl.type = 'lowpass'; fl.frequency.value = 2200;
+    swell(g, t, dur, LITE ? v * 1.5 : v, 0.4);
+    fl.connect(g); g.connect(musicBus); g.connect(verbIn);
+    for (const x of ch.t) {
+      for (const det of LITE ? [0] : [-9, 9]) {
+        const o = ac.createOscillator();
+        o.type = 'sawtooth'; o.frequency.value = (E4 / 2) * semi(low(ch) + x); o.detune.value = det;
+        o.connect(fl); o.start(t); o.stop(t + dur + 0.35);
       }
     }
   }
+  function choir(ch, t, dur, v) {
+    const g = ac.createGain(), lfo = ac.createOscillator(), lg = ac.createGain();
+    swell(g, t, dur, LITE ? v * 1.5 : v, 0.5);
+    g.connect(choirIn);
+    lfo.frequency.value = 5; lg.gain.value = 10; // vibrato de las voces
+    lfo.connect(lg);
+    for (const x of [...ch.t, ch.t[0] + 12]) {
+      for (const det of LITE ? [0] : [-12, 12]) {
+        const o = ac.createOscillator();
+        o.type = 'sawtooth'; o.frequency.value = (E4 / 2) * semi(low(ch) + x); o.detune.value = det;
+        lg.connect(o.detune);
+        o.connect(g); o.start(t); o.stop(t + dur + 0.35);
+      }
+    }
+    lfo.start(t); lfo.stop(t + dur + 0.35);
+  }
 
-  function playStep(step, t) {
+  // --- Secuenciador
+  function enter(sec) { music.sec = sec; music.bar = 0; }
+  function nextBar() {
+    if (!music.sec) { enter('intro'); return; }
     const I = music.intensity;
-    const bar = Math.floor(step / 16) % 4, s = step % 16;
-    const ch = PROG[bar];
-    if (s % 4 === 0) {
-      kick(t);
-      if (beatCb) setTimeout(beatCb, Math.max(0, (t - ac.currentTime) * 1000));
+    music.bar++;
+    if (I >= 3 && music.sec !== 'boss' && music.sec !== 'intro') enter('boss');
+    else if (I < 3 && music.sec === 'boss') enter('chorus');
+    else if (music.bar >= SONG[music.sec].chords.length) enter(SONG[music.sec].next);
+  }
+
+  function playStep(t) {
+    if (music.s === 0) nextBar();
+    const I = music.intensity, s = music.s, b = music.bar;
+    const name = music.sec, sec = SONG[name], ch = CH[sec.chords[b]];
+    const last = b === sec.chords.length - 1;
+    if (s % 4 === 0 && beatCb) setTimeout(beatCb, Math.max(0, (t - ac.currentTime) * 1000));
+
+    if (name === 'intro') {
+      if (s === 0) {
+        strings(ch, t, STEP * 16, 0.06);
+        choir(ch, t, STEP * 16, 0.13);
+        timpani(t, ch.r, 0.55);
+      }
+      if (last && s >= 8) snare(t, 0.25 + (s - 8) * 0.1); // redoble que da paso a la banda
+    } else {
+      const boss = name === 'boss';
+      const c = sec.riff[s];
+      // Batería
+      if (I >= 2 || boss) kick(t, s % 4 === 0 ? 0.65 : 0.4); // doble bombo
+      else if (I === 1) { if (c !== '.') kick(t, 0.62); }     // el bombo sigue al riff
+      else if (s === 0 || s === 8 || s === 10) kick(t, 0.8);
+      if (last && s >= 12) { // redoble al final de cada parte
+        if (s < 14) snare(t, 0.7); else tom(t, s === 14 ? 190 : 120);
+      } else {
+        if (s === 4 || s === 12) snare(t);
+        if (boss && b % 2 === 1 && s === 14) snare(t, 0.6);
+        if (I >= 2 || boss) { if (s % 4 === 2) ride(t); }
+        else if (s % 2 === 0) hat(t, s % 4 === 0 ? 0.09 : 0.06);
+      }
+      if (s === 0 && (b === 0 || boss || (I >= 1 && b === 4) || (I >= 2 && b % 2 === 0))) crash(t);
+
+      // Guitarras y bajo
+      if (c !== '.') {
+        let len = 1;
+        while (s + len < 16 && sec.riff[s + len] === '.') len++;
+        riff(ch.r, t, len * STEP, c === 'O', c !== 'm');
+        bass(ch.r, t, len * STEP);
+      }
+
+      // Cuerdas y coro
+      if (s === 0) {
+        if (name === 'chorus' || I >= 2) strings(ch, t, STEP * 16, boss ? 0.045 : 0.035);
+        if (boss || (name === 'chorus' && I >= 2)) choir(ch, t, STEP * 16, boss ? 0.1 : 0.14);
+      }
     }
-    if (s % 2 === 0) bass(ch.root * (s % 8 === 6 ? 2 : 1), t);
-    if (I >= 1 && s % 4 === 2) hat(t, 0.06);
-    if (I >= 2 && s % 2 === 1) hat(t, 0.025);
-    if (I >= 2 && (s === 4 || s === 12)) snare(t);
-    if (I >= 1) {
-      const seq = [0, ch.third, 7, 12, 7, ch.third, 0, 7];
-      const n = seq[s % 8] + (I >= 3 && s >= 8 ? 12 : 0);
-      pluck(ch.root * 4 * semi(n), t, I >= 3 ? 3400 : 1900);
+
+    // Melodía
+    const note = sec.notes[b * 16 + s];
+    if (note) {
+      const dur = note.d * STEP;
+      if (name === 'intro') violin(note.n, t, dur);
+      else if (I >= 1) {
+        lead(note.n, t, dur, leadA, 0.5);
+        if (I >= 2 && !note.arp) lead(third(note.n, ch.hm), t, dur, leadB, 0.45); // armonía a dos guitarras
+      }
     }
-    if (s === 0) pad(ch.root * 2, ch.third, t, STEP * 16);
   }
 
   function schedule() {
     if (!music.on || !ready()) return;
     if (music.next < ac.currentTime - 0.2) music.next = ac.currentTime + 0.05;
     while (music.next < ac.currentTime + 0.12) {
-      playStep(music.step, music.next);
+      playStep(music.next);
       music.next += STEP;
-      music.step++;
+      music.s = (music.s + 1) % 16;
     }
   }
 
@@ -353,9 +676,11 @@ const Sound = (() => {
     clearTimeout(fadeTimer);
     musicBus.gain.cancelScheduledValues(ac.currentTime);
     musicBus.gain.setValueAtTime(musicOn ? MUSIC_VOL : 0, ac.currentTime);
+    // Cada partida nueva empieza la canción desde la intro
+    music.sec = null;
+    music.s = 0;
     if (music.on) return;
     music.on = true;
-    music.step = 0;
     music.next = ac.currentTime + 0.08;
     music.timer = setInterval(schedule, 25);
   }
@@ -855,17 +1180,18 @@ const gemTier = v => (v <= GEM_TIERS[0].max ? 0 : v <= GEM_TIERS[1].max ? 1 : 2)
 //   tam            → tamaño (1 = normal, 1.3 = un 30% más grande, 0.8 = más pequeño).
 // Si una imagen no existe, se usa el dibujo de neón de siempre.
 // -----------------------------------------------------------------------------
+// Los pequeños apenas se reducen; cuanto más grande es la figura, más se encoge.
 const SKINS = {
-  zangano:   { modo: 'recorte', tam: 1 },
-  veloz:     { modo: 'recorte', tam: 1 },
-  divisor:   { modo: 'recorte', tam: 1 },
-  mini:      { modo: 'recorte', tam: 1 },
-  centinela: { modo: 'recorte', tam: 1 },
-  tanque:    { modo: 'circulo', tam: 1 },
-  jefe1:     { modo: 'circulo', tam: 1 },
-  jefe2:     { modo: 'circulo', tam: 1 },
-  jefe3:     { modo: 'circulo', tam: 1 },
-  jefe4:     { modo: 'circulo', tam: 1 },
+  zangano:   { modo: 'recorte', tam: 0.93 },
+  veloz:     { modo: 'recorte', tam: 0.93 },
+  divisor:   { modo: 'recorte', tam: 0.86 },
+  mini:      { modo: 'recorte', tam: 0.94 },
+  centinela: { modo: 'recorte', tam: 0.88 },
+  tanque:    { modo: 'circulo', tam: 0.8 },
+  jefe1:     { modo: 'circulo', tam: 0.76 },
+  jefe2:     { modo: 'circulo', tam: 0.76 },
+  jefe3:     { modo: 'circulo', tam: 0.76 },
+  jefe4:     { modo: 'circulo', tam: 0.76 },
   jugador:   { modo: 'circulo', tam: 1 },
 };
 const skinImg = {}; // imágenes que se han cargado bien
@@ -1125,11 +1451,15 @@ const PASSIVES = {
 // -----------------------------------------------------------------------------
 // JEFES Y EVENTOS
 // -----------------------------------------------------------------------------
+// Ataques: ring = anillo de balas, spiral = espiral de balas, dash = embestida,
+// summon = invoca enemigos, y los de zona (sin balas; un círculo avisa dónde golpeará):
+// slam = pisotón con onda de choque alrededor, jump = salto que aplasta donde estabas,
+// storm = tormenta de rayos que caen sobre ti y a tu alrededor.
 const BOSSES = [
-  { name: 'GUARDIÁN PRISMA',  hp: 1100,  r: 46, speed: 58, dmg: 20, color: '#ff2e97', sides: 6, attacks: ['ring', 'summon'], ringN: 16, ringCount: 3, arms: 3, dashes: 2 },
-  { name: 'DEVORADOR',        hp: 3200,  r: 50, speed: 70, dmg: 24, color: '#ff9f1c', sides: 3, attacks: ['dash', 'ring', 'dash'], ringN: 20, ringCount: 2, arms: 3, dashes: 3 },
-  { name: 'TEJEDOR DEL CAOS', hp: 7000,  r: 54, speed: 64, dmg: 28, color: '#b04dff', sides: 5, attacks: ['spiral', 'dash', 'summon'], ringN: 22, ringCount: 3, arms: 3, dashes: 2 },
-  { name: 'NÚCLEO DEL VACÍO', hp: 24000, r: 70, speed: 55, dmg: 34, color: '#ff2244', sides: 8, attacks: ['spiral', 'ring', 'dash', 'summon'], ringN: 26, ringCount: 3, arms: 4, dashes: 2, final: true },
+  { name: 'GUARDIÁN PRISMA',  hp: 1100,  r: 46, speed: 58, dmg: 20, color: '#ff2e97', sides: 6, attacks: ['slam', 'ring', 'summon'], ringN: 12, ringCount: 2, arms: 3, dashes: 2 },
+  { name: 'DEVORADOR',        hp: 3200,  r: 50, speed: 70, dmg: 24, color: '#ff9f1c', sides: 3, attacks: ['dash', 'jump', 'dash', 'ring'], ringN: 14, ringCount: 1, arms: 3, dashes: 3 },
+  { name: 'TEJEDOR DEL CAOS', hp: 7000,  r: 54, speed: 64, dmg: 28, color: '#b04dff', sides: 5, attacks: ['storm', 'dash', 'spiral', 'summon'], ringN: 16, ringCount: 2, arms: 3, dashes: 2 },
+  { name: 'NÚCLEO DEL VACÍO', hp: 24000, r: 60, speed: 55, dmg: 34, color: '#ff2244', sides: 8, attacks: ['jump', 'ring', 'storm', 'dash', 'slam', 'spiral', 'summon'], ringN: 18, ringCount: 2, arms: 3, dashes: 2, final: true },
 ];
 
 const EVENTS = [
@@ -1157,7 +1487,7 @@ const EVENTS = [
 let state = 'menu';
 let G = null;   // datos de la partida
 let P = null;   // jugador
-let enemies = [], bossList = [], projectiles = [], ebullets = [], gems = [], pickups = [];
+let enemies = [], bossList = [], projectiles = [], ebullets = [], hazards = [], gems = [], pickups = [];
 let particles = [], rings = [], bolts = [], waves = [], strikes = [], texts = [], timers = [];
 let pCursor = 0;
 let menuEnts = [];
@@ -1762,6 +2092,7 @@ function spawnEnemy(type, x, y, opt = {}) {
     face: !!T.face, ranged: !!T.ranged, heavy: !!T.heavy, split: T.split || 0,
     elite, boss: false, flash: 0, dead: false, orbT: 0,
     shootT: rand(1, 2.5), strafe: Math.random() < 0.5 ? -1 : 1, phase: rand(TAU),
+    mode: 0, modeT: 0, ca: 0, // embestida (centinelas): 1 = apuntando, 2 = embistiendo
     sep: skinImg[type] ? 1.3 : 1, // con imagen grande se separan un poco más para no amontonarse
     dir: opt.dir || null, life: opt.life || 0,
   };
@@ -1839,6 +2170,8 @@ function runEvent(ev) {
 }
 
 // ---------- Enemigos -------------------------------------------------------------
+const CHARGE_K = 6, CHARGE_T = 0.5; // embestida del centinela: x6 de velocidad durante medio segundo
+
 function enemyShot(x, y, a, spd, dmg, color) {
   if (ebullets.length > 600) return;
   ebullets.push({ x, y, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, r: 6, dmg, color, life: 7, dead: false });
@@ -1868,14 +2201,30 @@ function updateEnemies(dt) {
       mx = e.dir.x; my = e.dir.y;
       e.life -= dt;
       if (e.life <= 0) { e.dead = true; continue; }
-    } else if (e.ranged) { // mantiene la distancia y dispara
-      if (d < 170) { mx = -dx; my = -dy; }
-      else if (d < 270) { mx = -dy * e.strafe; my = dx * e.strafe; }
+    } else if (e.ranged) { // mantiene la distancia; a veces dispara y a veces te embiste
       e.shootT -= dt;
-      if (e.shootT <= 0 && d < 460) {
-        e.shootT = rand(2, 2.8);
-        enemyShot(e.x, e.y, Math.atan2(dy, dx), 220, e.dmg * 0.8, '#ff5a5a');
-        Sound.sfx.eshoot();
+      if (e.mode === 1) { // se para y apunta (se ve una franja de aviso)
+        mx = 0; my = 0;
+        e.modeT -= dt;
+        if (e.modeT > 0.2) e.ca = Math.atan2(dy, dx); // al final deja de seguirte: puedes esquivarla
+        if (e.modeT <= 0) { e.mode = 2; e.modeT = CHARGE_T; Sound.sfx.dash(); }
+      } else if (e.mode === 2) { // embestida en línea recta
+        mx = Math.cos(e.ca) * CHARGE_K; my = Math.sin(e.ca) * CHARGE_K;
+        e.modeT -= dt;
+        if (Math.random() < 0.5) addParticle(e.x, e.y, -mx * 25, -my * 25, 0.35, rand(2, 4), e.color, 0, 3);
+        if (e.modeT <= 0) e.mode = 0;
+      } else {
+        if (d < 170) { mx = -dx; my = -dy; }
+        else if (d < 270) { mx = -dy * e.strafe; my = dx * e.strafe; }
+        if (e.shootT <= 0 && d < 460) {
+          e.shootT = rand(3.6, 4.8);
+          if (d < 330 && Math.random() < 0.6) {
+            e.mode = 1; e.modeT = 0.6; e.ca = Math.atan2(dy, dx);
+          } else {
+            enemyShot(e.x, e.y, Math.atan2(dy, dx), 220, e.dmg * 0.8, '#ff5a5a');
+            Sound.sfx.eshoot();
+          }
+        }
       }
     }
     // Separación: los enemigos se empujan entre sí para no amontonarse
@@ -1921,6 +2270,46 @@ function updateEnemyBullets(dt) {
   }
 }
 
+// ---------- Ataques de zona (sin balas) -------------------------------------------
+// Aparece un círculo en el suelo que se va llenando; cuando está lleno, golpea.
+// Si sigues dentro en ese momento, te hace daño: ¡sal del círculo!
+//   follow → el círculo sigue a su dueño; manual → lo hace estallar el jefe
+//   (al aterrizar del salto, por ejemplo); bolt → cae un rayo del cielo.
+function addHazard(x, y, r, delay, dmg, color, opt = {}) {
+  const h = {
+    x, y, r, t: 0, delay, dmg, color, owner: opt.owner || null,
+    follow: !!opt.follow, manual: !!opt.manual, bolt: !!opt.bolt, dead: false,
+  };
+  hazards.push(h);
+  return h;
+}
+
+function updateHazards(dt) {
+  for (const h of hazards) {
+    if (h.dead) continue;
+    if (h.owner && h.owner.dead) { h.dead = true; continue; } // si el jefe muere o huye, el ataque se cancela
+    if (h.follow) { h.x = h.owner.x; h.y = h.owner.y; }
+    h.t += dt;
+    if (!h.manual && h.t >= h.delay) explodeHazard(h);
+  }
+}
+
+function explodeHazard(h) {
+  if (!h || h.dead) return;
+  h.dead = true;
+  const rr = h.r + P.r * 0.5;
+  if (dist2(h.x, h.y, P.x, P.y) < rr * rr) hurtPlayer(h.dmg);
+  if (h.bolt) {
+    addBolt(h.x + rand(-80, 80), h.y - 560, h.x, h.y, h.color, 6);
+    addBolt(h.x + rand(-80, 80), h.y - 560, h.x, h.y, '#ffffff', 3);
+  }
+  addRing(h.x, h.y, h.r * 1.15, h.color, 0.45, 7);
+  addRing(h.x, h.y, h.r * 0.6, '#ffffff', 0.3, 3);
+  burst(h.x, h.y, h.color, Math.min(40, 14 + Math.floor(h.r * 0.12)), 200 + h.r * 1.5, 0.6);
+  G.shake = Math.max(G.shake, Math.min(16, 5 + h.r * 0.05));
+  Sound.sfx.boom();
+}
+
 // ---------- Jefes ------------------------------------------------------------------
 function spawnBoss(i) {
   const B = BOSSES[i];
@@ -1931,6 +2320,7 @@ function spawnBoss(i) {
     r: B.r, hp: B.hp, maxHp: B.hp, dmg: B.dmg, speed: B.speed, color: B.color, xp: 0,
     angle: 0, flash: 0, dead: false, orbT: 0, elite: false, heavy: true,
     state: 'move', st: 2.5, atk: 0, count: 0, dashA: 0, shootT: 0, spiralA: 0, phase2: false,
+    hz: null, jx: 0, jy: 0, jx0: 0, jy0: 0, air: 0, // ataques de zona y salto (air = altura del salto, 0..1)
     life: 120, // si no lo derrotas en 2 minutos, escapa (salvo el jefe final)
   };
   enemies.push(b);
@@ -1944,15 +2334,35 @@ function spawnBoss(i) {
   G.shake = Math.max(G.shake, 10);
 }
 
-function bossMove(b) { b.state = 'move'; b.st = b.phase2 ? 1.4 : 2.4; }
+function bossMove(b) { b.state = 'move'; b.st = b.phase2 ? 1.4 : 2.4; b.air = 0; }
 function bossDashPrep(b, t) { b.state = 'dashPrep'; b.st = t; b.dashA = Math.atan2(P.y - b.y, P.x - b.x); }
+
+const JUMP_T = 0.8; // duración del salto en el aire
 
 function bossNextAttack(b) {
   const atk = b.def.attacks[b.atk++ % b.def.attacks.length];
+  const fast = b.phase2 ? 1.4 : 1;
   if (atk === 'ring') { b.state = 'ring'; b.st = 0.7; b.count = b.def.ringCount; }
   else if (atk === 'dash') { b.count = b.def.dashes; bossDashPrep(b, 0.8); }
-  else if (atk === 'spiral') { b.state = 'spiral'; b.st = 3.2; b.shootT = 0; b.spiralA = rand(TAU); }
+  else if (atk === 'spiral') { b.state = 'spiral'; b.st = 2.4; b.shootT = 0; b.spiralA = rand(TAU); }
   else if (atk === 'summon') { b.state = 'summon'; b.st = 0.8; }
+  else if (atk === 'slam') { // pisotón: onda de choque alrededor del jefe
+    b.state = 'slam'; b.st = 1.1;
+    b.hz = addHazard(b.x, b.y, b.r + 150, 1.1 / fast, b.dmg * 0.9, b.color, { owner: b, follow: true, manual: true });
+  } else if (atk === 'jump') { // salta hacia donde estás (como mucho 520 de distancia)
+    b.state = 'jumpPrep'; b.st = 0.6;
+    const dx = P.x - b.x, dy = P.y - b.y, k = Math.min(1, 520 / (Math.hypot(dx, dy) || 1));
+    b.jx = b.x + dx * k; b.jy = b.y + dy * k;
+    b.hz = addHazard(b.jx, b.jy, b.r + 95, (0.6 + JUMP_T) / fast, b.dmg, b.color, { owner: b, manual: true });
+  } else if (atk === 'storm') { // rayos: uno justo donde estás y los demás alrededor
+    b.state = 'storm'; b.st = 1.4;
+    const n = b.phase2 ? 7 : 5;
+    for (let k = 0; k < n; k++) {
+      const a = rand(TAU), d = k === 0 ? 0 : rand(80, 270);
+      addHazard(P.x + Math.cos(a) * d, P.y + Math.sin(a) * d, 80, 1.1 + k * 0.15, b.dmg * 0.7, b.color, { owner: b, bolt: true });
+    }
+    Sound.sfx.zap();
+  }
 }
 
 function updateBoss(b, dt) {
@@ -1965,7 +2375,7 @@ function updateBoss(b, dt) {
     addRing(b.x, b.y, 420, b.color, 0.8, 8);
     G.shake = 20;
     Sound.sfx.alarm();
-    for (let k = 0; k < 36; k++) enemyShot(b.x, b.y, (k / 36) * TAU, 200, b.dmg * 0.6, b.color);
+    for (let k = 0; k < 18; k++) enemyShot(b.x, b.y, (k / 18) * TAU, 200, b.dmg * 0.6, b.color);
   }
   b.life -= dt;
   if (!b.final && b.life <= 0 && b.state === 'move') {
@@ -1990,7 +2400,7 @@ function updateBoss(b, dt) {
     case 'ring':
       b.vx *= 0.9; b.vy *= 0.9;
       if (b.st <= 0) {
-        const n = b.def.ringN + (b.phase2 ? 8 : 0), off = rand(TAU);
+        const n = b.def.ringN + (b.phase2 ? 4 : 0), off = rand(TAU);
         for (let k = 0; k < n; k++) enemyShot(b.x, b.y, off + (k / n) * TAU, 190, b.dmg * 0.6, b.color);
         addRing(b.x, b.y, b.r * 2.2, b.color, 0.3, 4);
         Sound.sfx.eshoot();
@@ -2019,12 +2429,44 @@ function updateBoss(b, dt) {
       b.vx *= 0.92; b.vy *= 0.92;
       b.shootT -= dt * fast;
       if (b.shootT <= 0) {
-        b.shootT = 0.09;
+        b.shootT = 0.16;
         const arms = b.def.arms + (b.phase2 ? 1 : 0);
         for (let k = 0; k < arms; k++) enemyShot(b.x, b.y, b.spiralA + (k / arms) * TAU, 170, b.dmg * 0.5, b.color);
         b.spiralA += 0.23;
         Sound.sfx.eshoot();
       }
+      if (b.st <= 0) bossMove(b);
+      break;
+    case 'slam':
+      b.vx *= 0.85; b.vy *= 0.85;
+      if (b.st <= 0) {
+        explodeHazard(b.hz);
+        addRing(b.x, b.y, (b.r + 150) * 1.5, '#ffffff', 0.5, 4);
+        bossMove(b);
+      }
+      break;
+    case 'jumpPrep': // se agacha y tiembla antes de saltar
+      b.vx = 0; b.vy = 0;
+      if (b.st <= 0) { b.state = 'jump'; b.st = JUMP_T; b.jx0 = b.x; b.jy0 = b.y; Sound.sfx.dash(); }
+      break;
+    case 'jump': {
+      const k = 1 - clamp(b.st / JUMP_T, 0, 1), e = k * k * (3 - 2 * k);
+      b.x = b.jx0 + (b.jx - b.jx0) * e;
+      b.y = b.jy0 + (b.jy - b.jy0) * e;
+      b.vx = 0; b.vy = 0;
+      b.air = Math.sin(Math.PI * k);
+      if (b.st <= 0) { // aterriza aplastando
+        b.x = b.jx; b.y = b.jy;
+        explodeHazard(b.hz);
+        burst(b.x, b.y, '#ffffff', 20, 420, 0.5);
+        G.shake = Math.max(G.shake, 18);
+        buzz(60);
+        bossMove(b);
+      }
+      break;
+    }
+    case 'storm':
+      b.vx *= 0.9; b.vy *= 0.9;
       if (b.st <= 0) bossMove(b);
       break;
     case 'summon':
@@ -2045,7 +2487,7 @@ function updateBoss(b, dt) {
   }
   b.x += b.vx * dt;
   b.y += b.vy * dt;
-  if (d < b.r + P.r - 6) hurtPlayer(b.dmg);
+  if (d < b.r + P.r - 6 && b.state !== 'jump') hurtPlayer(b.dmg); // en el aire no te toca
   // Si te alejas demasiado, el jefe te alcanza
   if (b.state === 'move' && d > spawnR() * 1.5) {
     const a = Math.atan2(b.y - P.y, b.x - P.x), R = spawnR() * 0.9;
@@ -2081,6 +2523,7 @@ function victory(b) {
   G.endT = 4.5;
   P.invul = 999;
   for (const eb of ebullets) eb.dead = true;
+  for (const h of hazards) h.dead = true;
   // Todos los enemigos estallan en cadena desde el núcleo
   for (const e of enemies) {
     if (e.dead || e === b) continue;
@@ -2212,12 +2655,13 @@ function update(dt) {
   updateWeapons(dt);
   updateProjectiles(dt);
   updateEnemyBullets(dt);
+  updateHazards(dt);
   updateWaves(dt);
   updateStrikes(dt);
   updateGems(dt);
   updatePickups(dt);
   updateFx(dt);
-  compact(enemies); compact(bossList); compact(projectiles); compact(ebullets);
+  compact(enemies); compact(bossList); compact(projectiles); compact(ebullets); compact(hazards);
   compact(gems); compact(pickups); compact(waves); compact(strikes);
 
   Sound.setIntensity(bossList.length ? 3 : G.time < 30 ? 0 : G.time < 150 ? 1 : 2);
@@ -2344,7 +2788,56 @@ function drawPickups() {
   }
 }
 
+// Avisos de los ataques de zona: el círculo se va llenando y parpadea justo antes del golpe
+function drawHazards() {
+  worldT();
+  for (const h of hazards) {
+    if (h.dead || !inView(h.x, h.y, h.r)) continue;
+    const p = clamp(h.t / h.delay, 0, 1);
+    const blink = p > 0.75 ? 0.6 + 0.4 * Math.sin(G.time * 40) : 1;
+    ctx.fillStyle = rgba(h.color, (0.07 + p * 0.1) * blink);
+    ctx.beginPath(); ctx.arc(h.x, h.y, h.r, 0, TAU); ctx.fill();
+    ctx.fillStyle = rgba(h.color, 0.16 + p * 0.2);
+    ctx.beginPath(); ctx.arc(h.x, h.y, h.r * p, 0, TAU); ctx.fill();
+    // Borde sólido y brillante (los círculos de tus meteoritos son discontinuos)
+    ctx.shadowColor = h.color;
+    ctx.shadowBlur = 12 * VIEW;
+    ctx.strokeStyle = rgba(h.color, 0.7 + p * 0.3);
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(h.x, h.y, h.r, 0, TAU); ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `rgba(255,255,255,${0.25 + p * 0.5})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(h.x, h.y, h.r * p, 0, TAU); ctx.stroke();
+    // Señal de peligro en el centro
+    const s = 15 * (0.9 + 0.1 * blink);
+    ctx.fillStyle = rgba(h.color, 0.9);
+    ctx.beginPath();
+    ctx.moveTo(h.x, h.y - s); ctx.lineTo(h.x + s, h.y + s * 0.75); ctx.lineTo(h.x - s, h.y + s * 0.75);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(h.x - 1.6, h.y - s * 0.45, 3.2, s * 0.62);
+    ctx.fillRect(h.x - 1.6, h.y + s * 0.3, 3.2, 3.2);
+  }
+}
+
 function drawEnemies() {
+  // Franja de aviso de los centinelas que van a embestir
+  worldT();
+  ctx.lineCap = 'round';
+  for (const e of enemies) {
+    if (e.mode !== 1 || e.dead || !inView(e.x, e.y, 300)) continue;
+    const L = e.speed * CHARGE_K * CHARGE_T, pulse = 0.5 + 0.5 * Math.sin(G.time * 30);
+    const ex = e.x + Math.cos(e.ca) * L, ey = e.y + Math.sin(e.ca) * L;
+    ctx.strokeStyle = rgba(e.color, 0.25 + 0.3 * pulse);
+    ctx.lineWidth = e.r * 1.6;
+    ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.strokeStyle = `rgba(255,255,255,${0.35 + 0.45 * pulse})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(ex, ey); ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+
   for (const e of enemies) {
     if (e.dead || !inView(e.x, e.y, e.r + 120)) continue;
     if (e.boss) { drawBoss(e); continue; }
@@ -2376,8 +2869,22 @@ function polyPath(n, r) {
 }
 
 function drawBoss(b) {
+  if (!b.air) { drawBossBody(b); return; }
+  // Saltando: su sombra se queda en el suelo y el jefe se dibuja más arriba
+  worldT();
+  const k = 1 - b.air * 0.35;
+  ctx.fillStyle = `rgba(0,0,0,${0.5 - b.air * 0.2})`;
+  ctx.beginPath(); ctx.ellipse(b.x, b.y + b.r * 0.3, b.r * k, b.r * 0.45 * k, 0, 0, TAU); ctx.fill();
+  const y = b.y;
+  b.y -= b.air * 120;
+  drawBossBody(b);
+  b.y = y;
+}
+
+function drawBossBody(b) {
   const t = G.time;
-  const tele = b.state === 'ring' || b.state === 'summon' || b.state === 'dashPrep';
+  const tele = b.state === 'ring' || b.state === 'summon' || b.state === 'dashPrep' ||
+    b.state === 'slam' || b.state === 'jumpPrep' || b.state === 'storm';
   const pulse = tele ? 0.5 + 0.5 * Math.sin(t * 28) : 0;
   const col = b.color;
   worldT();
@@ -2766,6 +3273,7 @@ function render() {
     drawStrikeMarks();
     drawGems();
     drawPickups();
+    drawHazards();
     drawEnemies();
     drawLights();
     drawPlayer();
@@ -3235,7 +3743,7 @@ $('btn-play').addEventListener('click', startGame);
 function startGame() {
   Sound.init();
   Sound.sfx.click();
-  enemies = []; bossList = []; projectiles = []; ebullets = []; gems = []; pickups = [];
+  enemies = []; bossList = []; projectiles = []; ebullets = []; hazards = []; gems = []; pickups = [];
   particles = []; rings = []; bolts = []; waves = []; strikes = []; texts = []; timers = [];
   pCursor = 0;
   grid.clear();
@@ -3335,7 +3843,8 @@ if (dev !== null) {
 window.__HN = {
   startGame, update, render, step,
   get state() { return state; }, get G() { return G; }, get P() { return P; },
-  counts: () => ({ enemies: enemies.length, bosses: bossList.length, projectiles: projectiles.length, ebullets: ebullets.length, gems: gems.length, particles: particles.length, pickups: pickups.length }),
+  get bosses() { return bossList; }, get enemies() { return enemies; },
+  counts: () => ({ enemies: enemies.length, bosses: bossList.length, projectiles: projectiles.length, ebullets: ebullets.length, hazards: hazards.length, gems: gems.length, particles: particles.length, pickups: pickups.length }),
   chooseCard, closeChest, applyOption,
 };
 
